@@ -2567,10 +2567,18 @@ func setSeal(c *ServerCommand, config *server.Config, infoKeys []string, info ma
 			Priority: 1,
 			Name:     "shamir",
 		})
-	case 1:
-		// If there's only one seal and it's disabled assume they want to
+	default:
+		allSealsDisabled := true
+		for _, c := range config.Seals {
+			if !c.Disabled {
+				allSealsDisabled = false
+			} else if c.Type == vault.SealConfigTypeShamir.String() {
+				return nil, errors.New("shamir seals cannot be set disabled (they should simply not be set)")
+			}
+		}
+		// If all seals are disabled assume they want to
 		// migrate to a shamir seal and simply didn't provide it
-		if config.Seals[0].Disabled {
+		if allSealsDisabled {
 			config.Seals = append(config.Seals, &configutil.KMS{
 				Type:     vault.SealConfigTypeShamir.String(),
 				Priority: 1,
@@ -2716,35 +2724,60 @@ func setSeal(c *ServerCommand, config *server.Config, infoKeys []string, info ma
 		return nil, errors.Join(sealConfigWarning, errors.New("no enabled Seals in configuration"))
 	case configuredSeals == 0:
 		return nil, errors.Join(sealConfigWarning, errors.New("no seals were successfully initialized"))
-	case containsShamir(enabledSealWrappers) && containsShamir(disabledSealWrappers):
-		return nil, errors.Join(sealConfigWarning, errors.New("shamir seals cannot be set disabled (they should simply not be set)"))
-
 	case len(enabledSealWrappers) == 1 && containsShamir(enabledSealWrappers):
 		// The barrier seal is Shamir. If there are any disabled seals, then we put them all in the same
 		// autoSeal.
-		barrierSeal = vault.NewDefaultSeal(vaultseal.NewAccess(sealLogger, sealGenerationInfo, enabledSealWrappers))
+		a, err := vaultseal.NewAccess(sealLogger, sealGenerationInfo, enabledSealWrappers)
+		if err != nil {
+			return nil, err
+		}
+		barrierSeal = vault.NewDefaultSeal(a)
 		if len(disabledSealWrappers) > 0 {
-			unwrapSeal = vault.NewAutoSeal(vaultseal.NewAccess(sealLogger, sealGenerationInfo, disabledSealWrappers))
+			a, err = vaultseal.NewAccess(sealLogger, sealGenerationInfo, disabledSealWrappers)
+			if err != nil {
+				return nil, err
+			}
+			unwrapSeal = vault.NewAutoSeal(a)
 		}
 
 	case len(disabledSealWrappers) == 1 && containsShamir(disabledSealWrappers):
 		// The unwrap seal is Shamir, we are migrating to an autoSeal.
-		barrierSeal = vault.NewAutoSeal(vaultseal.NewAccess(sealLogger, sealGenerationInfo, enabledSealWrappers))
-		unwrapSeal = vault.NewDefaultSeal(vaultseal.NewAccess(sealLogger, sealGenerationInfo, disabledSealWrappers))
+		a, err := vaultseal.NewAccess(sealLogger, sealGenerationInfo, enabledSealWrappers)
+		if err != nil {
+			return nil, err
+		}
+		barrierSeal = vault.NewAutoSeal(a)
+		a, err = vaultseal.NewAccess(sealLogger, sealGenerationInfo, disabledSealWrappers)
+		if err != nil {
+			return nil, err
+		}
+		unwrapSeal = vault.NewDefaultSeal(a)
 
 	case server.IsMultisealSupported():
 		// We know we are not using Shamir seal, that we are not migrating away from one, and multi seal is supported,
 		// so just put enabled and disabled wrappers on the same seal Access
 		allSealWrappers := append(enabledSealWrappers, disabledSealWrappers...)
-		barrierSeal = vault.NewAutoSeal(vaultseal.NewAccess(sealLogger, sealGenerationInfo, allSealWrappers))
+		a, err := vaultseal.NewAccess(sealLogger, sealGenerationInfo, allSealWrappers)
+		if err != nil {
+			return nil, err
+		}
+		barrierSeal = vault.NewAutoSeal(a)
 		if configuredSeals < len(enabledSealWrappers) {
 			c.UI.Warn("WARNING: running with fewer than all configured seals during unseal.  Will not be fully highly available until errors are corrected and Vault restarted.")
 		}
 	case len(enabledSealWrappers) == 1:
 		// We may have multiple seals disabled, but we know Shamir is not one of them.
-		barrierSeal = vault.NewAutoSeal(vaultseal.NewAccess(sealLogger, sealGenerationInfo, enabledSealWrappers))
+		a, err := vaultseal.NewAccess(sealLogger, sealGenerationInfo, enabledSealWrappers)
+		if err != nil {
+			return nil, err
+		}
+		barrierSeal = vault.NewAutoSeal(a)
 		if len(disabledSealWrappers) > 0 {
-			unwrapSeal = vault.NewAutoSeal(vaultseal.NewAccess(sealLogger, sealGenerationInfo, disabledSealWrappers))
+			a, err = vaultseal.NewAccess(sealLogger, sealGenerationInfo, disabledSealWrappers)
+			if err != nil {
+				return nil, err
+			}
+			unwrapSeal = vault.NewAutoSeal(a)
 		}
 
 	default:
